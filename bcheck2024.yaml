@@ -1,0 +1,180 @@
+metadata:
+  name: "OAuth/Cache/Smuggling/Clickjacking Multi-Check"
+  author: "Your Name"
+  description: "Detects OAuth hijacking, cache deception, TE.0 smuggling, etc."
+  severity: "High"
+  confidence: "Certain"
+
+# -----------------------------------------------------------------------------
+# 1. Hijacking OAuth Flows via Cookie Tossing (Passive)
+# -----------------------------------------------------------------------------
+define:
+  - oauth_endpoints:
+      type: "path"
+      path: "(authorize|token|userinfo|oauth2)"  # Common OAuth endpoints
+
+check:
+  - name: "Duplicate Cookies in OAuth Flow"
+    protocol: "http"
+    passive: true
+    match:
+      response:
+        headers:
+          - "Set-Cookie:.*"
+    where:
+      and:
+        - oauth_endpoints: true
+        - "count(header.values('Set-Cookie')) != count(unique(header.values('Set-Cookie')))"
+    issue:
+      type: "Cookie Tossing in OAuth"
+      detail: "Duplicate cookies detected in OAuth flow."
+      remediation: "Use unique cookie names or secure attributes."
+
+# -----------------------------------------------------------------------------
+# 2. Wildcard Web Cache Deception (Active)
+# -----------------------------------------------------------------------------
+check:
+  - name: "Wildcard Cache Key Test"
+    protocol: "http"
+    active: true
+    send:
+      request:
+        method: "GET"
+        path: "{{path}}?cache_deception_test=12345"  # Add random param
+    match:
+      response:
+        status: "{{original_status}}"
+        body: "{{original_body}}"
+    where:
+      original_status: "response.status"
+      original_body: "response.body"
+    issue:
+      type: "Wildcard Cache Key Vulnerability"
+      detail: "Cache key includes overly broad parameters."
+
+# -----------------------------------------------------------------------------
+# 3. OAuth Error Parameter Manipulation (Active)
+# -----------------------------------------------------------------------------
+check:
+  - name: "OAuth Error Bypass Attempt"
+    protocol: "http"
+    active: true
+    send:
+      request:
+        method: "GET"
+        parameters:
+          - name: "error"
+            value: "invalid_token"  # Malicious error state
+    match:
+      response:
+        body: "(access_token|authentication successful)"  # Look for success markers
+    where:
+      oauth_endpoints: true
+    issue:
+      type: "OAuth Non-Happy Path Exploit"
+      detail: "OAuth error parameter manipulation leads to ATO."
+
+# -----------------------------------------------------------------------------
+# 4. CVE-2024-4367 - PDF.js JS Execution (Active)
+# -----------------------------------------------------------------------------
+define:
+  - pdf_upload:
+      type: "path"
+      path: "(upload|generate|pdf)"
+
+check:
+  - name: "PDF.js JS Payload Test"
+    protocol: "http"
+    active: true
+    send:
+      request:
+        method: "POST"
+        path: "{{pdf_upload}}"
+        body: |
+          %PDF-1.4
+          <</OpenAction <</JS (app.alert(1))>> >>  # Embedded JS payload
+    match:
+      response:
+        body: "alert executed"  # Replace with your target's success indicator
+    where:
+      pdf_upload: true
+    issue:
+      type: "PDF.js Arbitrary JS Execution"
+      detail: "CVE-2024-4367 - JavaScript in PDF triggers execution."
+
+# -----------------------------------------------------------------------------
+# 5. DoubleClickjacking (Passive)
+# -----------------------------------------------------------------------------
+check:
+  - name: "Missing Clickjacking Headers"
+    protocol: "http"
+    passive: true
+    match:
+      response:
+        headers:
+          - "X-Frame-Options: DENY"  # Check for missing headers
+          - "Content-Security-Policy: frame-ancestors 'none'"
+    not: true
+    issue:
+      type: "Missing Clickjacking Protections"
+      detail: "X-Frame-Options or CSP frame-ancestors missing."
+
+# -----------------------------------------------------------------------------
+# 6. DOMPurify Bypass (Active)
+# -----------------------------------------------------------------------------
+check:
+  - name: "DOMPurify Sanitization Bypass"
+    protocol: "http"
+    active: true
+    send:
+      request:
+        parameters:
+          - name: "{{param}}"  # Target input field
+            value: "<svg><script>alert(1)</script>"  # Known bypass payload
+    match:
+      response:
+        body: "<script>alert(1)</script>"  # Check if unsanitized
+    issue:
+      type: "DOMPurify Bypass"
+      detail: "HTML sanitization bypassed."
+
+# -----------------------------------------------------------------------------
+# 7. TE.0 HTTP Request Smuggling (Active)
+# -----------------------------------------------------------------------------
+check:
+  - name: "TE.0 Request Smuggling Test"
+    protocol: "http"
+    active: true
+    send:
+      request: |
+        POST / HTTP/1.1
+        Host: {{host}}
+        Transfer-Encoding:0
+
+        GET /admin HTTP/1.1
+        Host: {{host}}
+    match:
+      response:
+        body: "Admin Panel"  # Look for smuggled response
+    issue:
+      type: "TE.0 HTTP Request Smuggling"
+      detail: "Transfer-Encoding:0 smuggling detected."
+
+# -----------------------------------------------------------------------------
+# 8. Apache Host Confusion (Active)
+# -----------------------------------------------------------------------------
+check:
+  - name: "Apache Host Header Confusion"
+    protocol: "http"
+    active: true
+    send:
+      request:
+        headers:
+          - "Host: example.com"
+          - "Host: evil.com"  # Duplicate Host headers
+    match:
+      response:
+        body: "evil.com"  # Check which Host is prioritized
+    issue:
+      type: "Apache Host Confusion Attack"
+      detail: "Duplicate Host headers cause ambiguity."
